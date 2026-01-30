@@ -3,10 +3,16 @@ import boto3
 from fastapi import APIRouter, HTTPException, File, UploadFile, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
-
+from sqlalchemy import create_engine, inspect
 from db.models import Dataset, IngestionStatus, ConnectionSource, SourceType
 from db.database import get_db  
 from utils.process_dataset import process_dataset
+import os
+from pydantic import BaseModel
+
+class ConnectionRequest(BaseModel):
+    name: str
+    connection_url: str
 
 router = APIRouter(prefix="/api/ingest")
  
@@ -70,17 +76,20 @@ async def upload_file(
 
 @router.post("/connect-db")
 async def connect_external_db(
-    name: str,
-    connection_url: str,
+    payload : ConnectionRequest,
     db: AsyncSession = Depends(get_db)
 ) -> dict:
     source_id = uuid.uuid4()
+
+    s_type = SourceType.POSTGRES
+    if "mysql" in payload.connection_url:
+        s_type = SourceType.MYSQL
     
     new_source = ConnectionSource(
         id=source_id,
-        name=name,
-        type=SourceType.POSTGRES,
-        connection_url=connection_url
+        name=payload.name,
+        type=s_type,
+        connection_url=payload.connection_url.strip()
     )
     
     db.add(new_source)
@@ -115,3 +124,32 @@ async def mirror_table(
     process_dataset(str(dataset_id))
     
     return {"dataset_id": dataset_id, "internal_table": internal_table}
+
+
+@router.get("/connect-db/{source_id}/tables")
+async def list_source_tables(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    source = await db.get(ConnectionSource, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    
+    try:
+        # Inject the appropriate driver into the connection URL
+        connection_url = source.connection_url
+        
+        if connection_url.startswith("postgresql://"):
+            connection_url = connection_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        elif connection_url.startswith("mysql://"):
+            connection_url = connection_url.replace("mysql://", "mysql+pymysql://", 1)
+        
+        print(f"Original URL: {source.connection_url}")
+        print(f"Modified URL: {connection_url}")
+        
+        temp_engine = create_engine(connection_url)
+        inspector = inspect(temp_engine)
+        tables = inspector.get_table_names()
+        temp_engine.dispose()
+        return {"tables": tables}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch tables: {str(e)}")

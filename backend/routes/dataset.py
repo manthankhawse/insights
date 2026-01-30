@@ -1,4 +1,4 @@
-from sqlalchemy import text
+from sqlalchemy import text, select
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db  
@@ -7,6 +7,10 @@ from db.models import Dataset, IngestionStatus, ConnectionSource, SourceType
 
 router = APIRouter(prefix="/api/dataset")
 
+@router.get("/")
+async def list_datasets(db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(Dataset))
+    return res.scalars().all()
 
 @router.get("/{dataset_id}/preview")
 async def get_dataset_preview(

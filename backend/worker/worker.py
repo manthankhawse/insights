@@ -54,11 +54,13 @@ def run_ingestion_pipeline(id: str):
                 data_stream = io.BytesIO(s3_obj['Body'].read())
 
                 if dataset.source_type == 'csv':
-                    df = pl.read_csv(data_stream)
+                    df = pl.read_csv(data_stream, 
+                                    null_values=["NA", "N/A", "null", ""], 
+                                    infer_schema_length=10000)
                 elif dataset.source_type == 'parquet':
                     df = pl.read_parquet(data_stream)
                 elif dataset.source_type in ['xlsx', 'xls']:
-                    df = pl.read_excel(data_stream)
+                    df = pl.read_excel(data_stream, infer_schema_length=10000)
         elif dataset.source_type in ["postgres_table", "mysql_table", "clickhouse_table"]:
             source = db.get(ConnectionSource, dataset.source_id)
             query = f"SELECT * FROM {dataset.display_name}"
