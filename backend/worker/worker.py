@@ -5,9 +5,10 @@ import os
 import boto3
 import io
 import polars as pl
-from sqlalchemy import create_engine 
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from db.models import Dataset, IngestionStatus, ConnectionSource
+import uuid
 
 load_dotenv()
 
@@ -36,7 +37,26 @@ s3_client = boto3.client(
 
 r = redis.Redis(host=os.getenv("REDIS_HOST"), port=os.getenv("REDIS_PORT"), decode_responses=True)
 
-
+def refine_types(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Attempts to fix common type issues Polars might miss during initial inference.
+    """
+    new_cols = []
+    for col in df.columns:
+        series = df[col]
+        
+        if series.dtype == pl.String:
+            try:
+                parsed = series.str.to_date(strict=False)
+                if parsed.null_count() < (len(series) * 0.8):
+                    new_cols.append(parsed.alias(col))
+                    continue
+            except:
+                pass
+        
+        new_cols.append(series)
+    
+    return pl.DataFrame(new_cols)
 
 def run_ingestion_pipeline(id: str):
     with SyncSessionLocal() as db: 
@@ -56,7 +76,8 @@ def run_ingestion_pipeline(id: str):
                 if dataset.source_type == 'csv':
                     df = pl.read_csv(data_stream, 
                                     null_values=["NA", "N/A", "null", ""], 
-                                    infer_schema_length=10000)
+                                    infer_schema_length=10000
+                                    try_parse_dates=True)
                 elif dataset.source_type == 'parquet':
                     df = pl.read_parquet(data_stream)
                 elif dataset.source_type in ['xlsx', 'xls']:
@@ -90,14 +111,39 @@ def run_ingestion_pipeline(id: str):
         else:
             print(f"❌ Unknown format: {dataset.source_type}")
             return
- 
-        schema_profiling = {
-            col: {
+
+        df = refine_types(df)
+        total_rows = df.height
+
+        schema_profiling = {}
+
+        for col in df.columns:
+            series = df[col]
+            dtype = series.dtype
+            
+            # Basic Stats
+            null_count = int(series.null_count())
+            unique_count = int(series.n_unique())
+            
+            stats = {
                 "type": str(dtype),
-                "null_count": int(df[col].null_count()),
-                "unique_count": int(df[col].n_unique())
-            } for col, dtype in df.schema.items()
-        }
+                "null_count": null_count,
+                "null_pct": round((null_count / total_rows) * 100, 2) if total_rows > 0 else 0,
+                "unique_count": unique_count,
+                "is_likely_id": unique_count == total_rows and dtype.is_integer(),
+                "is_categorical": unique_count < 20 and unique_count < (total_rows * 0.1),
+                "is_constant": unique_count == 1
+            }
+
+            # Numeric-specific inference (for outlier detection context)
+            if dtype.is_numeric():
+                stats["min"] = float(series.min()) if series.min() is not None else None
+                stats["max"] = float(series.max()) if series.max() is not None else None
+                stats["mean"] = float(series.mean()) if series.mean() is not None else None
+            
+            stats["sample"] = series.slice(0, 5).to_list()
+            
+            schema_profiling[col] = stats
 
         df.write_database(
             table_name=dataset.storage_table,
