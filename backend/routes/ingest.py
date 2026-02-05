@@ -1,155 +1,152 @@
-import uuid
-import boto3
-from fastapi import APIRouter, HTTPException, File, UploadFile, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
-from sqlalchemy import create_engine, inspect
-from db.models import Dataset, IngestionStatus, ConnectionSource, SourceType
-from db.database import get_db  
-from utils.process_dataset import process_dataset
+import hashlib
 import os
-from pydantic import BaseModel
+import shutil
+import duckdb
+import pandas as pd
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from botocore.exceptions import ClientError
 
-class ConnectionRequest(BaseModel):
-    name: str
-    connection_url: str
+from db.db import AsyncSessionLocal
+from db.models.data_source import DataSource
+from s3.client import s3_client
+from schemas.uploads import DataIngestRequest, SourceType
 
-router = APIRouter(prefix="/api/ingest")
- 
-BUCKET_NAME = os.getenv("BUCKET_NAME")
-s3_client = boto3.client(
-    's3',
-    endpoint_url=os.getenv("S3_URL"),
-    aws_access_key_id=os.getenv("S3_USER"),         # Default MinIO username
-    aws_secret_access_key=os.getenv("S3_PASS"),     # Default MinIO password
-    region_name=os.getenv("S3_REGION")                # Boto3 often requires a region name
-)
+router = APIRouter()
+
+duckdb_con = duckdb.connect(database=':memory:')
+
+
+def save_upload_to_temp(file: UploadFile, filename: str) -> str:
+    temp_dir = "temp_storage"
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, filename)
+
+    with open(temp_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    return temp_path
+
+
+def convert_to_parquet(source_path: str, source_type: SourceType) -> str:
+    parquet_path = source_path + ".parquet"
+
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=400, detail="File upload failed internally.")
+
+    try:
+        if source_type == SourceType.CSV:
+            safe_path = source_path.replace("'", "''")
+            safe_out = parquet_path.replace("'", "''")
+            query = f"COPY (SELECT * FROM read_csv_auto('{safe_path}')) TO '{safe_out}' (FORMAT 'PARQUET', CODEC 'SNAPPY')"
+            duckdb_con.execute(query)
+
+        elif source_type == SourceType.JSON:
+            safe_path = source_path.replace("'", "''")
+            safe_out = parquet_path.replace("'", "''")
+            query = f"COPY (SELECT * FROM read_json_auto('{safe_path}')) TO '{safe_out}' (FORMAT 'PARQUET', CODEC 'SNAPPY')"
+            duckdb_con.execute(query)
+
+        elif source_type == SourceType.EXCEL:
+            df = pd.read_excel(source_path)
+            df.to_parquet(parquet_path, index=False)
+
+        return parquet_path
+
+    except Exception as e:
+        if os.path.exists(parquet_path):
+            os.remove(parquet_path)
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
+
+
+def process_ingestion(file_path: str, metadata: DataIngestRequest) -> str:
+    """
+    Hashes the file on disk and uploads to S3.
+    """
+    print(f"✅ Ready to ingest {metadata.dataset_name} from {file_path}")
+
+    sha256_hash = hashlib.sha256()
+
+    with open(file_path, "rb") as f:
+        while chunk := f.read(65536):
+            sha256_hash.update(chunk)
+
+    remote_file_name = f"{sha256_hash.hexdigest()}.parquet"
+    bucket_name = 'raw-data'
+
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+    except ClientError:
+        try:
+            s3_client.create_bucket(Bucket=bucket_name)
+        except Exception as e:
+            print(f"Error creating bucket: {e}")
+
+    try:
+        s3_client.upload_file(file_path, bucket_name, remote_file_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"S3 Upload failed: {e}")
+
+    return remote_file_name
+
 
 @router.post("/upload")
-async def upload_file(
-    file: UploadFile = File(...), 
-    db: AsyncSession = Depends(get_db)
-) -> dict: 
-    filename = file.filename or "unknown"
-    ext = filename.split('.')[-1].lower()
-    if ext not in ['csv', 'xlsx', 'xls', 'parquet']:
-        raise HTTPException(status_code=400, detail="Unsupported File Format")
-
-    dataset_id = uuid.uuid4()
-    s3_key = f"raw/{dataset_id}/{filename}"
- 
-    try: 
-        s3_client.upload_fileobj(file.file, BUCKET_NAME, s3_key)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"S3 Upload failed: {str(e)}")
- 
-    internal_table = f"data_{str(dataset_id).replace('-', '_')}"
-
-    new_dataset = Dataset(
-        id=dataset_id,
-        display_name=filename,
-        filename=filename,
-        source_type=ext,
-        s3_key=s3_key,            
-        storage_table=internal_table,
-        status=IngestionStatus.PENDING
-    )
- 
-    try:
-        db.add(new_dataset)
-        await db.commit()
-        await db.refresh(new_dataset)
-        process_dataset(str(dataset_id))
-
-
-    except Exception as e: 
-        await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
- 
-
-    return {
-        "id": str(new_dataset.id),
-        "status": new_dataset.status,
-        "storage_table": internal_table 
-    }
-
-
-@router.post("/connect-db")
-async def connect_external_db(
-    payload : ConnectionRequest,
-    db: AsyncSession = Depends(get_db)
-) -> dict:
-    source_id = uuid.uuid4()
-
-    s_type = SourceType.POSTGRES
-    if "mysql" in payload.connection_url:
-        s_type = SourceType.MYSQL
-    
-    new_source = ConnectionSource(
-        id=source_id,
-        name=payload.name,
-        type=s_type,
-        connection_url=payload.connection_url.strip()
-    )
-    
-    db.add(new_source)
-    await db.commit()
-    return {"source_id": source_id, "status": "source_registered"}
-
-
-@router.post("/mirror-table")
-async def mirror_table(
-    source_id: uuid.UUID,
-    table_name: str,
-    db: AsyncSession = Depends(get_db)
+async def upload(
+        file: UploadFile = File(None),
+        metadata_json: str = Form(..., description="JSON string of DataIngestRequest model")
 ):
-    dataset_id = uuid.uuid4()
-    internal_table = f"data_{str(dataset_id).replace('-', '_')}"
-
-    source = await db.get(ConnectionSource, source_id) 
-    source_type = "mysql_table" if "mysql" in source.connection_url else "postgres_table"
-    
-    new_dataset = Dataset(
-        id=dataset_id,
-        display_name=table_name,
-        source_id=source_id,
-        source_type=source_type,
-        storage_table=internal_table,
-        status=IngestionStatus.PENDING
-    )
-    
-    db.add(new_dataset)
-    await db.commit()
-    
-    process_dataset(str(dataset_id))
-    
-    return {"dataset_id": dataset_id, "internal_table": internal_table}
-
-
-@router.get("/connect-db/{source_id}/tables")
-async def list_source_tables(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    source = await db.get(ConnectionSource, source_id)
-    if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
-    
     try:
-        # Inject the appropriate driver into the connection URL
-        connection_url = source.connection_url
-        
-        if connection_url.startswith("postgresql://"):
-            connection_url = connection_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-        elif connection_url.startswith("mysql://"):
-            connection_url = connection_url.replace("mysql://", "mysql+pymysql://", 1)
-        
-        print(f"Original URL: {source.connection_url}")
-        print(f"Modified URL: {connection_url}")
-        
-        temp_engine = create_engine(connection_url)
-        inspector = inspect(temp_engine)
-        tables = inspector.get_table_names()
-        temp_engine.dispose()
-        return {"tables": tables}
+        req_data = DataIngestRequest.model_validate_json(metadata_json)
+        artifact_url = ""
+
+        if req_data.source_type in [SourceType.POSTGRES_DB, SourceType.MYSQL_DB]:
+            if not req_data.connection_string:
+                raise HTTPException(status_code=400, detail="Connection string required for Database Source")
+
+            print(f"✅ Registered Database Source: {req_data.dataset_name}")
+
+        else:
+            if not file:
+                raise HTTPException(status_code=400,
+                                    detail=f"File upload required for source type {req_data.source_type}")
+
+            raw_file_path = save_upload_to_temp(file, file.filename)
+            final_path = raw_file_path
+
+            try:
+                if req_data.source_type != SourceType.PARQUET:
+                    final_path = convert_to_parquet(raw_file_path, req_data.source_type)
+
+                artifact_url = process_ingestion(final_path, req_data)
+
+            finally:
+                if os.path.exists(raw_file_path):
+                    os.remove(raw_file_path)
+                if final_path != raw_file_path and os.path.exists(final_path):
+                    os.remove(final_path)
+
+        async with AsyncSessionLocal() as session:
+            new_source = DataSource(
+                dataset_name=req_data.dataset_name,
+                description=req_data.description,
+                source_type=req_data.source_type,
+                artifact_url=artifact_url,
+                ingestion_config=req_data.ingestion_config,
+                connection_string=req_data.connection_string
+            )
+            session.add(new_source)
+            await session.commit()
+            await session.refresh(new_source)
+
+        return {
+            "status": "success",
+            "id": str(new_source.id),
+            "type": req_data.source_type,
+            "message": "Source registered successfully."
+        }
+
+    except HTTPException as he:
+        raise he
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch tables: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,33 +1,19 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from dotenv import load_dotenv
-from db.database import get_db 
-from routes import ingest, dataset
-from fastapi.middleware.cors import CORSMiddleware
-import os
+from db.db import init_db
+from routes.ingest import router
 
-load_dotenv()
+@asynccontextmanager
+async def life_span(app: FastAPI):
+    print("Starting application...")
+    await init_db()
+    yield
+    print("Stopping application...")
 
+app = FastAPI(lifespan=life_span)
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins="*",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(dataset.router)
-app.include_router(ingest.router)
+app.include_router(router, prefix="/api/v1")
 
 @app.get("/")
-async def func():
-    return {"message": "Hello world"} 
-
-@app.get("/greet/{name}")
-async def func(name: str) -> dict :
-    print(name)
-    return {"message": "Hello world"} 
-
-
+async def run_root():
+    return {"message": "hello"}
