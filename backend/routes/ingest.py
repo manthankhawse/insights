@@ -5,6 +5,7 @@ import duckdb
 import pandas as pd
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from botocore.exceptions import ClientError
+from sqlalchemy import select
 
 from db.db import AsyncSessionLocal
 from db.models.data_source import DataSource
@@ -87,6 +88,36 @@ def process_ingestion(file_path: str, metadata: DataIngestRequest) -> str:
         raise HTTPException(status_code=500, detail=f"S3 Upload failed: {e}")
 
     return remote_file_name
+
+
+@router.get("/data")
+async def get_all_sources():
+    try:
+        async with AsyncSessionLocal() as session:
+            stmt = select(DataSource)
+
+            # 2. Execute and fetch all scalar results
+            result = await session.execute(stmt)
+            sources = result.scalars().all()
+
+            # 3. Serialize to JSON-friendly dictionaries
+            return [
+                {
+                    "id": str(source.id),
+                    "name": source.dataset_name,
+                    "type": source.source_type.upper() if source.source_type else "FILE",
+                    # Format the date nicely for the UI (fallback to "Recently" if missing)
+                    "uploaded": source.created_at.strftime("%b %d, %Y") if hasattr(source,
+                                                                                   'created_at') and source.created_at else "Recently",
+                    "status": "Ready",
+                    "rows": "Unknown",  # We'll calculate these dynamically in the Python sandbox later
+                    "size": "--"
+                }
+                for source in sources
+            ]
+
+    except HTTPException as he:
+        raise he
 
 
 @router.post("/upload")

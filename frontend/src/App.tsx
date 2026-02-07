@@ -1,56 +1,33 @@
-import { useState } from 'react'
-import { Database, BarChart3, Table } from 'lucide-react'
-import DatasetInventory from './pages/DatasetInventory'
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import DashboardLayout from "./layouts/DashboardLayout";
 
-function App() {
-  const [activeTab, setActiveTab] = useState('inventory')
+// Stubs for your pages (create these in your src/pages folder)
+import DataSources from "./pages/DataSources";
+import Workspaces from "./pages/Workspaces";
 
-  return (
-    <div className="flex h-screen bg-slate-50">
-      {/* Sidebar */}
-      <aside className="w-64 bg-slate-900 text-white flex flex-col">
-        <div className="p-6 text-2xl font-bold border-b border-slate-800 text-blue-400">
-          Insights AI
-        </div>
-        <nav className="flex-1 p-4 space-y-2">
-          <NavItem 
-            icon={<Table size={20}/>} 
-            label="Datasets" 
-            active={activeTab === 'inventory'} 
-            onClick={() => setActiveTab('inventory')}
-          />
-          <NavItem 
-            icon={<BarChart3 size={20} />}
-            label="Visualizations"
-            active={activeTab === 'viz'} onClick={undefined}          />
-          <NavItem 
-            icon={<Database size={20}/>} 
-            label="Connections" 
-            active={activeTab === 'db'} onClick={undefined}
-          />
-        </nav>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-8">
-        {activeTab === 'inventory' && <DatasetInventory />}
-      </main>
-    </div>
-  )
-}
-//@ts-ignore
-function NavItem({ icon, label, active, onClick }) {
-  return (
-    <button 
-      onClick={onClick}
-      className={`w-full flex items-center space-x-3 p-3 rounded-lg transition-colors ${
-        active ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 text-slate-400'
-      }`}
-    >
-      {icon}
-      <span className="font-medium">{label}</span>
-    </button>
-  )
+function Overview() {
+  return <div className="p-8 text-white">Overview Dashboard Coming Soon...</div>;
 }
 
-export default App
+function Settings() {
+  return <div className="p-8 text-white">Account Settings Coming Soon...</div>;
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* The Layout acts as a wrapper for all child routes */}
+        <Route element={<DashboardLayout />}>
+          <Route path="/" element={<Overview />} />
+          <Route path="/datasources" element={<DataSources />} />
+          <Route path="/workspaces/*" element={<Workspaces />} />
+          <Route path="/settings" element={<Settings />} />
+        </Route>
+        
+        {/* Catch-all redirect */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}

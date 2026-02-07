@@ -88,29 +88,30 @@ def send_request(source_type, dataset_name, file_path=None, connection_string=No
 if __name__ == "__main__":
     # Generate Files
     print("Generating dummy files...")
-    csv_file = create_dummy_csv()
-    json_file = create_dummy_json()
-    xlsx_file = create_dummy_excel()
-    parquet_file = create_dummy_parquet()
+    csv_file = 'Housing.csv'
+    # csv_file = create_dummy_csv()
+    # json_file = create_dummy_json()
+    # xlsx_file = create_dummy_excel()
+    # parquet_file = create_dummy_parquet()
 
     # 1. Test CSV
     send_request("csv", "Test CSV Dataset", file_path=csv_file)
 
     # 2. Test JSON
-    send_request("json", "Test JSON Dataset", file_path=json_file)
+    # send_request("json", "Test JSON Dataset", file_path=json_file)
 
     # 3. Test Excel
-    send_request("excel", "Test Excel Dataset", file_path=xlsx_file)
+    # send_request("excel", "Test Excel Dataset", file_path=xlsx_file)
 
     # 4. Test Parquet (Direct upload, no conversion needed)
-    send_request("parquet", "Test Parquet Dataset", file_path=parquet_file)
+    # send_request("parquet", "Test Parquet Dataset", file_path=parquet_file)
 
     # 5. Test Postgres (Metadata only, no file)
     # Note: Using a dummy connection string just to validate validation logic
-    send_request("postgres_db", "Test Postgres DB", connection_string="postgresql://user:pass@localhost:5432/mydb")
+    # send_request("postgres_db", "Test Postgres DB", connection_string="postgresql://user:pass@localhost:5432/mydb")
 
     # Cleanup
-    print("Cleaning up files...")
-    for f in [csv_file, json_file, xlsx_file, parquet_file]:
-        if os.path.exists(f):
-            os.remove(f)
+    # print("Cleaning up files...")
+    # for f in [csv_file, json_file, xlsx_file, parquet_file]:
+    #     if os.path.exists(f):
+    #         os.remove(f)
