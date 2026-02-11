@@ -1,6 +1,8 @@
 import hashlib
 import os
 import shutil
+import uuid
+
 import duckdb
 import pandas as pd
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -15,6 +17,28 @@ from schemas.uploads import DataIngestRequest, SourceType
 router = APIRouter()
 
 duckdb_con = duckdb.connect(database=':memory:')
+
+def convert_csv_to_parquet(path: str, out: str):
+    attempts = [
+        "read_csv_auto('{p}', sample_size=-1, ignore_errors=true, null_padding=true)",
+        "read_csv('{p}', delim=',', header=true, strict_mode=false, ignore_errors=true)",
+        "read_csv('{p}', delim=';', header=true, strict_mode=false, ignore_errors=true)",
+        "read_csv('{p}', delim='|', header=true, strict_mode=false, ignore_errors=true)",
+    ]
+
+    for expr in attempts:
+        try:
+            duckdb_con.execute(f"""
+                COPY (
+                  SELECT * FROM {expr.format(p=path)}
+                )
+                TO '{out}' (FORMAT 'PARQUET', CODEC 'SNAPPY')
+            """)
+            return
+        except Exception:
+            pass
+
+    raise Exception("CSV parsing failed for all known dialects")
 
 
 def save_upload_to_temp(file: UploadFile, filename: str) -> str:
@@ -38,8 +62,9 @@ def convert_to_parquet(source_path: str, source_type: SourceType) -> str:
         if source_type == SourceType.CSV:
             safe_path = source_path.replace("'", "''")
             safe_out = parquet_path.replace("'", "''")
-            query = f"COPY (SELECT * FROM read_csv_auto('{safe_path}')) TO '{safe_out}' (FORMAT 'PARQUET', CODEC 'SNAPPY')"
-            duckdb_con.execute(query)
+            # query = f"COPY (SELECT * FROM read_csv_auto('{safe_path}', sample_size=-1, ignore_errors=true, null_padding=true)) TO '{safe_out}' (FORMAT 'PARQUET', CODEC 'SNAPPY')"
+            # duckdb_con.execute(query)
+            convert_csv_to_parquet(safe_path, safe_out)
 
         elif source_type == SourceType.JSON:
             safe_path = source_path.replace("'", "''")
@@ -116,6 +141,22 @@ async def get_all_sources():
                 for source in sources
             ]
 
+    except HTTPException as he:
+        raise he
+
+
+@router.get("/data/{source_id}")
+async def get_all_sources(source_id: str):
+    try:
+        async with AsyncSessionLocal() as session:
+            try:
+                source_uuid = uuid.UUID(source_id)  # Using a new variable prevents overwrite bugs
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid source_id")
+
+            source = await session.get(DataSource, source_uuid)
+
+            return source
     except HTTPException as he:
         raise he
 

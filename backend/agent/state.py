@@ -16,4 +16,4 @@ class AgentState(TypedDict):
     error_trace: Optional[str]
     attempt_count: int
     ui_blocks: Annotated[List[Dict[str, Any]], append_block]
-
+    df_json: Optional[str]

@@ -4,45 +4,39 @@ from agent.state import AgentState
 from agent.nodes.router import llm
 from db.duck_db import get_duckdb_connection
 
-
 class SQLGeneration(BaseModel):
     query: str = Field(..., description="A valid DuckDB SQL query.")
 
-
 def fetch_schema(artifact_url: str) -> str:
-    """Uses DuckDB to instantly read the schema metadata from MinIO without downloading the file."""
+    """Uses DuckDB to instantly read the schema metadata from MinIO."""
     con = get_duckdb_connection()
     s3_path = f"s3://raw-data/{artifact_url}"
-
     try:
-        # DESCRIBE returns the column names and data types
         df = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{s3_path}')").df()
         schema_text = "\n".join([f"- {row['column_name']} ({row['column_type']})" for _, row in df.iterrows()])
-        return schema_text, s3_path
+        return schema_text
     except Exception as e:
-        return f"Error fetching schema: {str(e)}", s3_path
+        return f"Error fetching schema: {str(e)}"
     finally:
         con.close()
 
-
 def query_node(state: AgentState):
-    """Fetches schema, injects it into prompt, and generates DuckDB SQL."""
+    """Fetches schema and generates standard SQL."""
     print("📝 [SQL Node] Fetching schema and generating query...")
 
     messages = state.get("messages", [])
     artifact_url = state.get("artifact_url")
     error_trace = state.get("error_trace")
 
-    # 1. Fetch the real schema dynamically from MinIO
-    schema_text, s3_path = fetch_schema(artifact_url)
+    schema_text = fetch_schema(artifact_url)
 
-    # 2. Build the System Prompt
+    # --- THE CLEAN ABSTRACTION PROMPT ---
     system_prompt = f"""
-    You are an expert DuckDB SQL developer.
+    You are an expert SQL developer. 
 
     CRITICAL RULES:
-    1. The table you are querying is located at: '{s3_path}'
-    2. Example syntax: SELECT column_a FROM read_parquet('{s3_path}') LIMIT 10;
+    1. You are querying a table named exactly: data_table
+    2. Write standard SQL queries (e.g., SELECT, DESCRIBE, PRAGMA) against 'data_table'.
     3. Return ONLY the valid SQL query. Do not use Markdown backticks.
 
     DATASET SCHEMA:
@@ -55,7 +49,7 @@ def query_node(state: AgentState):
     structured_llm = llm.with_structured_output(SQLGeneration)
     result = structured_llm.invoke([SystemMessage(content=system_prompt)] + messages)
 
-    print(f"📝 [SQL Node] Generated Query:\n{result.query}")
+    print(f"📝 [SQL Node] Generated Query: {result.query}")
 
     return {
         "current_code": result.query,

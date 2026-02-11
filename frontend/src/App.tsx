@@ -4,6 +4,7 @@ import DashboardLayout from "./layouts/DashboardLayout";
 // Stubs for your pages (create these in your src/pages folder)
 import DataSources from "./pages/DataSources";
 import Workspaces from "./pages/Workspaces";
+import DataSourceChat from "./pages/DataSourceChat";
 
 function Overview() {
   return <div className="p-8 text-white">Overview Dashboard Coming Soon...</div>;
@@ -22,7 +23,9 @@ export default function App() {
           <Route path="/" element={<Overview />} />
           <Route path="/datasources" element={<DataSources />} />
           <Route path="/workspaces/*" element={<Workspaces />} />
+          <Route path="/datasources/:id" element={<DataSourceChat />} />
           <Route path="/settings" element={<Settings />} />
+
         </Route>
         
         {/* Catch-all redirect */}
